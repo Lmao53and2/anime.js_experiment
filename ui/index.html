@@ -1,1 +1,151 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Central 73</title>
+    <style>
+        :root { --bg:#f8f9fa; --side:#fff; --text:#2d3436; --border:#eee; --acc:#0984e3; --bot:#fff; }
+        [data-theme="dark"] { --bg:#121212; --side:#1e1e1e; --text:#e0e0e0; --border:#333; --acc:#2196f3; --bot:#252525; }
+        
+        body { font-family: 'Inter', sans-serif; margin: 0; background: var(--bg); color: var(--text); display: flex; height: 100vh; overflow: hidden; }
+        .main { flex-grow: 1; display: flex; flex-direction: column; position: relative; }
+        .header { background: var(--side); padding: 15px 30px; display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); }
+        #chat-history { flex-grow: 1; overflow-y: auto; padding: 30px; display: flex; flex-direction: column; gap: 20px; }
 
+        /* Bubbles */
+        .wrapper { display: flex; flex-direction: column; max-width: 85%; position: relative; }
+        .user-w { align-self: flex-end; } .bot-w { align-self: flex-start; }
+        .msg { padding: 16px 20px; border-radius: 14px; font-size: 15px; line-height: 1.6; }
+        .user { background: var(--acc); color: white; border-bottom-right-radius: 2px; }
+        .bot { background: var(--bot); border: 1px solid var(--border); border-bottom-left-radius: 2px; }
+
+        /* Toolbar */
+        .toolbar { display: flex; gap: 10px; margin-top: 5px; opacity: 0; transition: 0.2s; }
+        .bot-w:hover .toolbar { opacity: 1; }
+        .tool-btn { background: none; border: none; color: #888; cursor: pointer; font-size: 11px; font-weight: 700; }
+
+        /* Sidebar */
+        #sidebar { position: absolute; right: -350px; top: 0; width: 350px; height: 100%; background: var(--side); border-left: 1px solid var(--border); z-index: 100; padding: 30px; box-sizing: border-box; display: flex; flex-direction: column; gap: 20px; }
+        label { font-size: 11px; font-weight: 800; color: #777; }
+        input, textarea { background: var(--bg); color: var(--text); border: 1px solid var(--border); padding: 10px; border-radius: 6px; width: 100%; box-sizing: border-box; outline: none; }
+
+        .input-area { padding: 20px 40px; background: var(--side); border-top: 1px solid var(--border); }
+        .box { background: var(--bg); border-radius: 30px; display: flex; padding: 5px 15px; border: 1px solid var(--border); }
+        #user-input { background: transparent; color: var(--text); border: none; flex: 1; padding: 12px; outline: none; }
+        .send { background: var(--acc); color: white; border: none; width: 40px; height: 40px; border-radius: 50%; cursor: pointer; }
+    </style>
+</head>
+<body data-theme="light">
+    <div class="main">
+        <div class="header">
+            <div style="font-weight:900;">CENTRAL 73</div>
+            <button onclick="toggleSidebar()" style="background:var(--acc); color:white; border:none; padding:8px 15px; border-radius:6px; cursor:pointer;">Settings</button>
+        </div>
+        <div id="chat-history"></div>
+        <div class="input-area">
+            <div class="box">
+                <input type="text" id="user-input" placeholder="Message agent..." onkeypress="if(event.key==='Enter')send()">
+                <button class="send" onclick="send()">↑</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="sidebar">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <b style="font-size:18px;">Settings</b>
+            <button onclick="toggleSidebar()" style="background:none; border:none; color:var(--text); font-size:20px; cursor:pointer;">✕</button>
+        </div>
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <label>DARK MODE</label>
+            <input type="checkbox" id="dark-check" onclick="setTheme()" style="width:auto;">
+        </div>
+        <div><label>AGENT ROLE</label><input type="text" id="role" value="Engineering Assistant"></div>
+        <div><label>INSTRUCTIONS</label><textarea id="inst" style="height:100px;">Be technical and accurate.</textarea></div>
+        <div><label>API KEY</label><input type="password" id="key"></div>
+        <button onclick="apply()" style="background:var(--acc); color:white; border:none; padding:12px; border-radius:6px; cursor:pointer; font-weight:800;">SAVE CONFIG</button>
+    </div>
+
+    <script src="./anime.min.js"></script>
+    <script src="./marked.min.js"></script>
+    <script>
+        let isSide = false;
+        let buffers = {};
+        let prompts = {};
+
+        window.addEventListener('pywebviewready', async () => {
+            const theme = await window.pywebview.api.get_theme();
+            document.body.setAttribute('data-theme', theme);
+            document.getElementById('dark-check').checked = (theme === 'dark');
+            const history = await window.pywebview.api.load_history();
+            history.forEach(m => append(m.role, m.content, false));
+        });
+
+        function setTheme() {
+            const t = document.getElementById('dark-check').checked ? 'dark' : 'light';
+            document.body.setAttribute('data-theme', t);
+            window.pywebview.api.set_theme(t);
+        }
+
+        function toggleSidebar() {
+            isSide = !isSide;
+            anime({ targets: '#sidebar', right: isSide ? 0 : -350, duration: 400, easing: 'easeOutQuad' });
+        }
+
+        async function apply() {
+            const k = document.getElementById('key').value;
+            if(k) await window.pywebview.api.set_api_key(k);
+            await window.pywebview.api.update_agent_config(document.getElementById('role').value, document.getElementById('inst').value);
+            toggleSidebar();
+        }
+
+        function send() {
+            const i = document.getElementById('user-input');
+            const v = i.value; if(!v) return;
+            i.value = '';
+            append('user', v);
+            const bid = 'bot-' + Date.now();
+            buffers[bid] = ""; prompts[bid] = v;
+            createBot(bid);
+            window.pywebview.api.start_chat_stream(v, bid);
+        }
+
+        function receiveChunk(c, id) {
+            buffers[id] += c;
+            document.getElementById(id).innerHTML = marked.parse(buffers[id]);
+            document.getElementById('chat-history').scrollTop = document.getElementById('chat-history').scrollHeight;
+        }
+
+        function createBot(id) {
+            const h = document.getElementById('chat-history');
+            const w = document.createElement('div');
+            w.className = "wrapper bot-w";
+            w.innerHTML = `<div class="msg bot" id="${id}">...</div><div class="toolbar"><button class="tool-btn" onclick="navigator.clipboard.writeText(buffers['${id}'])">Copy</button><button class="tool-btn" onclick="redo('${id}')">Redo</button></div>`;
+            h.appendChild(w);
+            h.scrollTop = h.scrollHeight;
+            anime({ targets: w, opacity: [0,1], translateX: [-20,0], duration: 400 });
+        }
+
+        function redo(id) { window.pywebview.api.start_chat_stream(prompts[id], id); }
+        function clearBubble(id) { buffers[id] = ""; document.getElementById(id).innerHTML = "..."; }
+        function streamComplete() {}
+
+        function append(role, text, anim=true) {
+            if(role === 'bot') {
+                const id = 'bot-' + Math.random().toString(36).substr(2,9);
+                buffers[id] = text; createBot(id);
+                document.getElementById(id).innerHTML = marked.parse(text);
+            } else {
+                const h = document.getElementById('chat-history');
+                const w = document.createElement('div');
+                w.className = "wrapper user-w";
+                w.innerHTML = `<div class="msg user">${text}</div>`;
+                h.appendChild(w);
+                if(anim) anime({ targets: w, opacity: [0,1], translateX: [20,0], duration: 400 });
+            }
+            document.getElementById('chat-history').scrollTop = document.getElementById('chat-history').scrollHeight;
+        }
+
+        function receiveError(e) { alert(e); }
+    </script>
+</body>
+</html>
