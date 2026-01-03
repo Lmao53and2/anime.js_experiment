@@ -24,17 +24,20 @@ DB_FILE = "agent_workspace.db"
 # ============================================================================
 # Knowledge Base: stores successful learnings with FastEmbed
 # ============================================================================
-agent_knowledge = Knowledge(
-    name="Agent Learnings",
-    vector_db=PgVector(
-        db_url=db_url,
-        table_name="agent_learnings",
-        search_type=SearchType.hybrid,
-        embedder=FastEmbedEmbedder(), # Keeps FastEmbed requirement
-    ),
-    max_results=5,
-    contents_db=agent_storage,
-)
+try:
+    agent_knowledge = Knowledge(
+        name="Agent Learnings",
+        vector_db=PgVector(
+            db_url=db_url,
+            table_name="agent_learnings",
+            search_type=SearchType.hybrid,
+            embedder=FastEmbedEmbedder(),
+        ),
+        max_results=5,
+    )
+except Exception as e:
+    logger.warning(f"[Knowledge] PgVector not available, learnings will not persist: {e}")
+    agent_knowledge = None
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -57,6 +60,9 @@ def save_learning(
     """
     Save a reusable learning from a successful run.
     """
+    if not agent_knowledge:
+        return "Knowledge base not configured. Learnings cannot be saved without PgVector."
+    
     if not title or not title.strip() or not learning or not learning.strip():
         return "Cannot save: title and learning content are required"
     
@@ -92,7 +98,7 @@ class Api:
 You build institutional memory: successful insights get saved to a knowledge base.
 
 ## Workflow
-1. SEARCH KNOWLEDGE FIRST — Call `search_knowledge` before anything else.
+1. SEARCH KNOWLEDGE FIRST — Call `search_knowledge` before anything else (if available).
 2. RESEARCH — Use `parallel_search`, `yfinance`, or built-in search to gather fresh information.
 3. SYNTHESIZE — Combine prior learnings with new info.
 4. REFLECT — Consider if this task revealed a reusable insight.
@@ -136,6 +142,16 @@ You build institutional memory: successful insights get saved to a knowledge bas
 
     def _run_agent(self, user_text, target_id):
         try:
+            # Build tools list
+            tools = [
+                ParallelTools(),
+                YFinanceTools(),
+            ]
+            
+            # Only add save_learning if knowledge base is available
+            if agent_knowledge:
+                tools.append(save_learning)
+            
             # Self-Learning Agent using Perplexity Sonar
             agent = Agent(
                 model=Perplexity(id="sonar-pro", api_key=self._perplexity_key),
@@ -143,16 +159,11 @@ You build institutional memory: successful insights get saved to a knowledge bas
                 instructions=self.agent_instructions,
                 storage=agent_storage,
                 knowledge=agent_knowledge,
-                tools=[
-                    ParallelTools(),
-                    YFinanceTools(),
-                    save_learning,
-                ],
-                enable_agentic_memory=True,
-                search_knowledge=True,
+                tools=tools,
+                search_knowledge=bool(agent_knowledge),
                 add_datetime_to_context=True,
-                add_history_to_context=True,
-                num_history_runs=5,
+                add_history_to_messages=True,
+                num_history_responses=5,
                 markdown=True,
                 session_id="default_perplexity_session"
             )
@@ -171,6 +182,7 @@ You build institutional memory: successful insights get saved to a knowledge bas
 
             self.window.evaluate_js("streamComplete()")
         except Exception as e:
+            logger.error(f"Agent error: {e}")
             self.window.evaluate_js(f"receiveError({json.dumps(str(e))})")
 
 if __name__ == '__main__':
