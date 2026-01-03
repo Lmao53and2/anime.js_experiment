@@ -1,0 +1,8 @@
+pywebview
+agno
+fastembed
+pgvector
+psycopg2-binary
+google-generativeai
+yfinance
+sqlite-utils
