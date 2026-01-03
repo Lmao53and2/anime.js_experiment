@@ -7,7 +7,6 @@ import json
 from datetime import datetime, timezone
 
 from agno.agent import Agent
-from agno.models.google import Gemini
 from agno.models.perplexity import Perplexity
 from agno.knowledge.knowledge import Knowledge
 from agno.knowledge.reader.text_reader import TextReader
@@ -18,7 +17,7 @@ from agno.tools.yfinance import YFinanceTools
 from agno.utils.log import logger
 
 # Import db configuration
-from db import db_url, gemini_agents_db
+from db import db_url, agent_storage
 
 DB_FILE = "agent_workspace.db"
 
@@ -31,10 +30,10 @@ agent_knowledge = Knowledge(
         db_url=db_url,
         table_name="agent_learnings",
         search_type=SearchType.hybrid,
-        embedder=FastEmbedEmbedder(), # Satisfies fastembedded requirement
+        embedder=FastEmbedEmbedder(), # Keeps FastEmbed requirement
     ),
     max_results=5,
-    contents_db=gemini_agents_db,
+    contents_db=agent_storage,
 )
 
 def init_db():
@@ -87,7 +86,6 @@ def save_learning(
 class Api:
     def __init__(self):
         self._perplexity_key = os.environ.get("PERPLEXITY_API_KEY")
-        self._google_key = os.environ.get("GOOGLE_API_KEY")
         self.window = None
         self.agent_role = "Self-Learning Engineering Assistant"
         self.agent_instructions = """You are a Self-Learning Agent that improves over time by capturing and reusing successful patterns.
@@ -95,7 +93,7 @@ You build institutional memory: successful insights get saved to a knowledge bas
 
 ## Workflow
 1. SEARCH KNOWLEDGE FIRST — Call `search_knowledge` before anything else.
-2. RESEARCH — Use `parallel_search`, `yfinance`, or search tools to gather fresh information.
+2. RESEARCH — Use `parallel_search`, `yfinance`, or built-in search to gather fresh information.
 3. SYNTHESIZE — Combine prior learnings with new info.
 4. REFLECT — Consider if this task revealed a reusable insight.
 5. PROPOSE — If worth saving, end response with 'Proposed Learning' block."""
@@ -104,14 +102,9 @@ You build institutional memory: successful insights get saved to a knowledge bas
         self.window = window
 
     def set_api_key(self, key):
-        # We assume Perplexity key for now, or handle both
-        if key.startswith("pplx-"):
-            self._perplexity_key = key
-            os.environ["PERPLEXITY_API_KEY"] = key
-        else:
-            self._google_key = key
-            os.environ["GOOGLE_API_KEY"] = key
-        return "Key saved"
+        self._perplexity_key = key
+        os.environ["PERPLEXITY_API_KEY"] = key
+        return "Perplexity API Key saved"
 
     def update_agent_config(self, role, instructions):
         self.agent_role = role
@@ -131,18 +124,11 @@ You build institutional memory: successful insights get saved to a knowledge bas
         conn.close()
 
     def load_history(self):
-        # Implementation to load from gemini_agents_db
-        history = []
-        try:
-            # Simplified for UI display
-            pass
-        except:
-            pass
-        return history
+        return []
 
     def start_chat_stream(self, user_text, target_id=None):
-        if not self._google_key:
-            self.window.evaluate_js("receiveError('Please set your Google API Key (for Gemini) in Settings.')")
+        if not self._perplexity_key:
+            self.window.evaluate_js("receiveError('Please set your Perplexity API Key in Settings.')")
             return
         thread = threading.Thread(target=self._run_agent, args=(user_text, target_id))
         thread.daemon = True
@@ -150,18 +136,16 @@ You build institutional memory: successful insights get saved to a knowledge bas
 
     def _run_agent(self, user_text, target_id):
         try:
-            # Self-Learning Agent using Gemini 3 Flash
+            # Self-Learning Agent using Perplexity Sonar
             agent = Agent(
-                model=Gemini(id="gemini-3-flash-preview", api_key=self._google_key),
+                model=Perplexity(id="sonar-pro", api_key=self._perplexity_key),
                 role=self.agent_role,
                 instructions=self.agent_instructions,
-                db=gemini_agents_db,
+                storage=agent_storage,
                 knowledge=agent_knowledge,
                 tools=[
                     ParallelTools(),
                     YFinanceTools(),
-                    # Perplexity used as a tool for research (Sonar requirement)
-                    Agent(model=Perplexity(id="sonar-pro"), name="Sonar Search", tools=[ParallelTools()]),
                     save_learning,
                 ],
                 enable_agentic_memory=True,
@@ -170,7 +154,7 @@ You build institutional memory: successful insights get saved to a knowledge bas
                 add_history_to_context=True,
                 num_history_runs=5,
                 markdown=True,
-                session_id="default_gui_session"
+                session_id="default_perplexity_session"
             )
 
             full_response = ""
@@ -194,6 +178,6 @@ if __name__ == '__main__':
     api = Api()
     base_path = getattr(sys, '_MEIPASS', os.path.abspath("."))
     html_path = os.path.join(base_path, "ui", "index.html")
-    window = webview.create_window("Central 73 | Self-Learning Agent", html_path, js_api=api, width=1200, height=850)
+    window = webview.create_window("Central 73 | Perplexity Learning Agent", html_path, js_api=api, width=1200, height=850)
     api.set_window(window)
     webview.start(debug=True)

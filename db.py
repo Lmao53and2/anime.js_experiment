@@ -7,4 +7,4 @@ from agno.vectordb.pgvector import PgVector
 db_url = os.environ.get("DATABASE_URL", "postgresql://ai:ai@localhost:5432/ai")
 
 # Shared storage for agent sessions
-gemini_agents_db = PostgresAgentStorage(table_name="gemini_agent_sessions", db_url=db_url)
+agent_storage = PostgresAgentStorage(table_name="agent_sessions", db_url=db_url)
