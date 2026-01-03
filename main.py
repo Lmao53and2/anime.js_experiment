@@ -16,15 +16,17 @@ from agno.tools.parallel import ParallelTools
 from agno.tools.yfinance import YFinanceTools
 from agno.utils.log import logger
 
-# Import db configuration (no agno.storage imports here)
-from db import db_url, AGENT_DB_FILE
+# Import db configuration and storage loaders
+from db import db_url, load_session_storage, load_personality_storage, load_task_storage
 
-DB_FILE = AGENT_DB_FILE
+# Load separate storage instances
+session_db = load_session_storage()
+personality_db = load_personality_storage()
+task_db = load_task_storage()
 
 # =========================================================================
 # Knowledge Base (optional): PgVector + FastEmbed
 # =========================================================================
-# If PgVector dependencies or DATABASE_URL are not configured, the app still runs.
 try:
     agent_knowledge = Knowledge(
         name="Agent Learnings",
@@ -42,97 +44,18 @@ except Exception as e:
 
 
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
+    # Still use a main workspace DB for app settings and fallback UI history
+    workspace_db = "agent_workspace.db"
+    conn = sqlite3.connect(workspace_db)
     c = conn.cursor()
-
-    # App settings
     c.execute("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT)")
     c.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('theme', 'light')")
-
-    # Simple persistent chat history (UI + lightweight prompt-memory)
-    c.execute(
-        """
-        CREATE TABLE IF NOT EXISTS chat_messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        )
-        """
-    )
-
-    # SQLite fallback learnings (when PgVector isn't available)
-    c.execute(
-        """
-        CREATE TABLE IF NOT EXISTS learnings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            context TEXT,
-            learning TEXT NOT NULL,
-            confidence TEXT,
-            type TEXT,
-            created_at TEXT NOT NULL
-        )
-        """
-    )
-
     conn.commit()
     conn.close()
 
 
 def _now_z() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _insert_chat(role: str, content: str):
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute(
-        "INSERT INTO chat_messages(role, content, created_at) VALUES (?, ?, ?)",
-        (role, content, _now_z()),
-    )
-    conn.commit()
-    conn.close()
-
-
-def _get_recent_chat(limit: int = 12):
-    conn = sqlite3.connect(DB_FILE)
-    rows = conn.execute(
-        "SELECT role, content FROM chat_messages ORDER BY id DESC LIMIT ?",
-        (limit,),
-    ).fetchall()
-    conn.close()
-    return list(reversed(rows))
-
-
-def _search_sqlite_learnings(query: str, limit: int = 5):
-    # Very lightweight fallback: keyword LIKE search
-    q = f"%{query}%"
-    conn = sqlite3.connect(DB_FILE)
-    rows = conn.execute(
-        """
-        SELECT title, context, learning, confidence, type, created_at
-        FROM learnings
-        WHERE title LIKE ? OR context LIKE ? OR learning LIKE ?
-        ORDER BY id DESC
-        LIMIT ?
-        """,
-        (q, q, q, limit),
-    ).fetchall()
-    conn.close()
-
-    results = []
-    for r in rows:
-        results.append(
-            {
-                "title": r[0],
-                "context": r[1] or "",
-                "learning": r[2],
-                "confidence": r[3] or "medium",
-                "type": r[4] or "rule",
-                "created_at": r[5],
-            }
-        )
-    return results
 
 
 # =========================================================================
@@ -145,16 +68,9 @@ def save_learning(
     confidence: str = "medium",
     type: str = "rule",
 ) -> str:
-    """Save a reusable learning from a successful run.
-
-    Uses PgVector when available, otherwise falls back to SQLite.
-    """
-    if not title or not title.strip():
-        return "Cannot save: title is required"
-    if not learning or not learning.strip():
-        return "Cannot save: learning content is required"
-    if len(learning.strip()) < 20:
-        return "Cannot save: learning is too short to be useful. Be more specific."
+    """Save a reusable learning from a successful run."""
+    if not title or not title.strip() or not learning or not learning.strip():
+        return "Cannot save: title and learning content are required"
 
     payload = {
         "title": title.strip(),
@@ -165,7 +81,6 @@ def save_learning(
         "created_at": _now_z(),
     }
 
-    # Preferred: PgVector KB
     if agent_knowledge:
         try:
             agent_knowledge.add_content(
@@ -176,27 +91,10 @@ def save_learning(
             )
             return f"Learning saved (PgVector): '{payload['title']}'"
         except Exception as e:
-            logger.error(f"[Learning] PgVector save failed, falling back to SQLite: {e}")
-
-    # Fallback: SQLite
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute(
-        """
-        INSERT INTO learnings(title, context, learning, confidence, type, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (
-            payload["title"],
-            payload["context"],
-            payload["learning"],
-            payload["confidence"],
-            payload["type"],
-            payload["created_at"],
-        ),
-    )
-    conn.commit()
-    conn.close()
-    return f"Learning saved (SQLite): '{payload['title']}'"
+            logger.error(f"[Learning] PgVector save failed: {e}")
+            return f"Error saving to knowledge base: {e}"
+    
+    return "Knowledge base not configured. Learning not saved."
 
 
 class Api:
@@ -213,11 +111,7 @@ The loop:
 4. Identify reusable insight
 5. Save with user approval
 
-Rules:
-- Always search learnings first.
-- Never call save_learning without explicit user approval.
-- When proposing a learning, end with a Proposed Learning block and ask: Save this? (yes/no)
-"""
+You have dedicated storage for Sessions, Personality Analysis, and Task Extraction."""
 
     def set_window(self, window):
         self.window = window
@@ -233,76 +127,52 @@ Rules:
         return "Config updated"
 
     def get_theme(self):
-        conn = sqlite3.connect(DB_FILE)
+        workspace_db = "agent_workspace.db"
+        conn = sqlite3.connect(workspace_db)
         res = conn.execute("SELECT value FROM app_settings WHERE key='theme'").fetchone()
         conn.close()
         return res[0] if res else "light"
 
     def set_theme(self, theme):
-        conn = sqlite3.connect(DB_FILE)
+        workspace_db = "agent_workspace.db"
+        conn = sqlite3.connect(workspace_db)
         conn.execute("UPDATE app_settings SET value=? WHERE key='theme'", (theme,))
         conn.commit()
         conn.close()
 
     def load_history(self):
-        # UI expects: [{role: 'user'|'bot', content: '...'}]
-        msgs = _get_recent_chat(limit=100)
-        out = []
-        for role, content in msgs:
-            out.append({"role": "bot" if role == "assistant" else role, "content": content})
-        return out
+        # In Agno v2 with SqliteDb, history is managed by the DB instance
+        # For the UI, we could fetch sessions, but returning empty for now as it's handled by Agent memory
+        return []
 
     def start_chat_stream(self, user_text, target_id=None):
         if not self._perplexity_key:
             self.window.evaluate_js("receiveError('Please set your Perplexity API Key in Settings.')")
             return
-        _insert_chat("user", user_text)
         thread = threading.Thread(target=self._run_agent, args=(user_text, target_id))
         thread.daemon = True
         thread.start()
 
-    def _build_prompt_with_memory(self, user_text: str) -> str:
-        # Lightweight memory: include recent chat + relevant SQLite learnings.
-        recent = _get_recent_chat(limit=12)
-        learnings = _search_sqlite_learnings(user_text, limit=5) if not agent_knowledge else []
-
-        parts = []
-        if recent:
-            parts.append("Recent conversation:\n" + "\n".join([
-                ("User: " if r == "user" else "Assistant: ") + c for r, c in recent
-            ]))
-
-        if learnings:
-            parts.append("Relevant prior learnings (SQLite fallback):\n" + "\n".join([
-                f"- {l['title']}: {l['learning']}" for l in learnings
-            ]))
-
-        parts.append("User request:\n" + user_text)
-        return "\n\n".join(parts)
-
     def _run_agent(self, user_text, target_id):
         try:
-            # Build tools list
-            tools = [ParallelTools(), YFinanceTools(), save_learning]
-
-            # If PgVector KB is available, let Agno search it; otherwise prompt contains SQLite learnings.
-            final_input = user_text
-            if not agent_knowledge:
-                final_input = self._build_prompt_with_memory(user_text)
-
+            # Self-Learning Agent using Perplexity Sonar and persistent SqliteDb
             agent = Agent(
                 model=Perplexity(id="sonar-pro", api_key=self._perplexity_key),
                 role=self.agent_role,
                 instructions=self.agent_instructions,
+                db=session_db, # Agno v2 persistent storage
                 knowledge=agent_knowledge,
-                tools=tools,
+                tools=[ParallelTools(), YFinanceTools(), save_learning],
                 search_knowledge=bool(agent_knowledge),
                 add_datetime_to_context=True,
+                add_history_to_messages=True,
+                num_history_responses=5,
                 markdown=True,
+                session_id="default_perplexity_gui"
             )
 
             full_response = ""
-            run_response = agent.run(final_input, stream=True)
+            run_response = agent.run(user_text, stream=True)
 
             if target_id:
                 self.window.evaluate_js(f"clearBubble('{target_id}')")
@@ -313,7 +183,6 @@ Rules:
                     full_response += content
                     self.window.evaluate_js(f"receiveChunk({json.dumps(content)}, '{target_id or ''}')")
 
-            _insert_chat("assistant", full_response)
             self.window.evaluate_js("streamComplete()")
         except Exception as e:
             logger.error(f"Agent error: {e}")
@@ -326,7 +195,7 @@ if __name__ == '__main__':
     base_path = getattr(sys, '_MEIPASS', os.path.abspath("."))
     html_path = os.path.join(base_path, "ui", "index.html")
     window = webview.create_window(
-        "Central 73 | Perplexity Learning Agent",
+        "Central 73 | Perplexity Agent with Persistent Storage",
         html_path,
         js_api=api,
         width=1200,
