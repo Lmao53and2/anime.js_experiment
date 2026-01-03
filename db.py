@@ -1,11 +1,11 @@
 import os
-from agno.storage.sqlite import SqliteStorage
 
-# Database URL for PostgreSQL with pgvector (optional - for knowledge base embeddings)
+# Optional: PostgreSQL URL for PgVector knowledge base (if configured)
 db_url = os.environ.get("DATABASE_URL", "postgresql://ai:ai@localhost:5432/ai")
 
-# Agent session storage using SQLite
-agent_storage = SqliteStorage(
-    table_name="agent_sessions",
-    db_file="agent_workspace.db"
-)
+# Local SQLite file used by the desktop app for settings + chat history
+AGENT_DB_FILE = os.environ.get("AGENT_DB_FILE", "agent_workspace.db")
+
+# Agno storage is intentionally NOT imported here because some agno PyPI builds
+# do not ship the storage subpackage. The app will run without it.
+agent_storage = None
